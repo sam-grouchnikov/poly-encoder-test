@@ -3,6 +3,7 @@ import torch.nn as nn
 from transformers import DistilBertModel, DistilBertTokenizerFast
 import wandb
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # --- 1. Initialize W&B ---
 wandb.init(project="polyencoder-toy-test", name="toy-polyencoder")
 
@@ -84,19 +85,19 @@ toy_dataset = [
 
 # --- 4. Tokenizer and model ---
 tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
-model = PolyEncoder(poly_m=4)
+model = PolyEncoder(poly_m=4).to(device)
 
 # --- 5. Optimizer and loss ---
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-5)
 loss_fn = nn.BCEWithLogitsLoss()
 
 # --- 6. Training loop ---
-for epoch in range(2):
+for epoch in range(10):
     total_loss = 0
     for context, candidate, label in toy_dataset:
         # Tokenize context and candidate
-        ctx = tokenizer(context, return_tensors="pt", padding=True, truncation=True)
-        cand = tokenizer(candidate, return_tensors="pt", padding=True, truncation=True)
+        ctx = tokenizer(context, return_tensors="pt", padding=True, truncation=True).to(device)
+        cand = tokenizer(candidate, return_tensors="pt", padding=True, truncation=True).to(device)
 
         # Forward pass
         scores = model(ctx["input_ids"], ctx["attention_mask"],
@@ -104,7 +105,7 @@ for epoch in range(2):
         # scores: [b] = [1] in this toy example
 
         # Labels tensor
-        labels = torch.tensor([label], dtype=torch.float)
+        labels = torch.tensor([label], dtype=torch.float).to(device)
 
         # Compute loss
         loss = loss_fn(scores, labels)
@@ -120,4 +121,5 @@ for epoch in range(2):
 
     print(f"Epoch {epoch} total loss: {total_loss:.4f}")
 
+print(model.poly_codes)
 wandb.finish()
