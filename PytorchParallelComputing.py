@@ -1,61 +1,87 @@
 import os
 import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
-
-# Crucial setup for allowing cross-gpu communication
-def setup():
-    dist.init_process_group(backend='nccl', init_method='env://')
-    rank = int(os.environ['RANK'])
-    local_rank = int(os.environ['LOCAL_RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
-    torch.cuda.set_device(local_rank)
-
-    print(f"[SETUP] rank={rank}, local_rank={local_rank}, world_size={world_size}, device={torch.cuda.current_device()}")
-    return rank, local_rank, world_size
-
-def cleanup():
-    dist.destroy_process_group()
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
+import torch.multiprocessing as mp
+import wandb
 
 
-def train():
-    rank, local_rank, world_size = setup()
+def train(rank, world_size):
+    # Setup environment for DDP
+    os.environ['MASTER_ADDR'] = '127.0.0.1'  # local host for single-node
+    os.environ['MASTER_PORT'] = '12355'      # any free port
 
-    model = nn.Linear(10, 1).to(local_rank)
-    # Wrapping the model as a DDP
-    model = DDP(model, device_ids=[local_rank])
+    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+    print(f"[SETUP] rank={rank}, device={torch.cuda.current_device()}, world_size={world_size}")
+
+    if rank == 0:
+        wandb.init(project="ddp_debug", name="toy_ddp_run")
+        wandb.config.update({"world_size": world_size, "batch_size": 2, "dataset_size": 32})
+
+    # Model as DDP process
+    model = nn.Linear(10, 1).to(rank)
+    model = DDP(model, device_ids=[rank])
+
 
     dataset = TensorDataset(torch.randn(32, 10), torch.randn(32, 1))
-    # Distributed the data evenly across GPUs
+    # Allows data to be evenly distributed across GPUs
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    dataloader = DataLoader(dataset, batch_size=4, sampler=sampler)
+    # Batch size is per step, so this may be changed without affecting distributed computing
+    dataloader = DataLoader(dataset, batch_size=2, sampler=sampler)
 
     optimizer = optim.SGD(model.parameters(), lr=0.01)
     loss_fn = nn.MSELoss()
 
-    for epoch in range(2):
-        sampler.set_epoch(epoch)  # shuffle differently each epoch
-        print(f"\n[Epoch {epoch}] Rank {rank} starting training loop with {len(dataloader)} batches")
+    # Training loop
+    for epoch in range(15):
+        sampler.set_epoch(epoch)  # ensure shuffling is different per epoch
+        print(f"\n[Epoch {epoch}] Rank {rank} starting training with {len(dataloader)} batches")
+
+        epoch_loss_accum = torch.tensor(0.0).to(rank)
         for batch_idx, (x, y) in enumerate(dataloader):
-            x, y = x.to(local_rank), y.to(local_rank)
+            x, y = x.to(rank), y.to(rank)
             optimizer.zero_grad()
-            y_pred = model(x)
-            loss = loss_fn(y_pred, y)
+            outputs = model(x)
+            loss = loss_fn(outputs, y)
             loss.backward()
             optimizer.step()
+            print(f"Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}")
+
+            loss_all = loss.clone()
+            dist.all_reduce(loss_all, op=dist.ReduceOp.SUM)
+            loss_all /= world_size  # mean loss across all GPUs
+            epoch_loss_accum += loss_all  # accumulate for epoch
 
             print(f"Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}")
 
+            if rank == 0:
+                wandb.log({
+                    "loss_step": loss_all.item(),
+                    "step": epoch * len(dataloader) + batch_idx
+                })
+        epoch_loss_avg = epoch_loss_accum / len(dataloader)  # average across batches
         if rank == 0:
-            print(f"[Epoch {epoch}] >>> Final loss (Rank 0 only): {loss.item():.4f}")
+            wandb.log({
+                "loss_epoch": epoch_loss_avg.item(),
+                "epoch": epoch
+            })
+            print(f"[Epoch {epoch}] >>> Rank 0 epoch loss: {epoch_loss_avg.item():.4f}")
 
-    # Shuts down process group
-    cleanup()
+    if rank == 0:
+        wandb.finish()
+    # Cleanup
+    dist.destroy_process_group()
+    print(f"Rank {rank} finished training.")
 
-train()
+
+if __name__ == "__main__":
+    world_size = 4  # number of GPUs / processes
+    mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
+
 
 # torchrun --standalone --nproc_per_node=(number of gpus) PytorchParallelComputing.py
 
