@@ -79,9 +79,12 @@ def train(rank, world_size):
 
 
 if __name__ == "__main__":
-    world_size = 4  # number of GPUs / processes
+    print(torch.cuda.is_available())
+    print(torch.cuda.device_count())
+    world_size = torch.cuda.device_count()  # number of GPUs / processes
     mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
 
+# torchrun --standalone --nproc_per_node=4 PytorchParallelComputing.py
 
 # Expected with 2 gpus
 # [Epoch x] Rank 0 starting training loop with 4 batches
