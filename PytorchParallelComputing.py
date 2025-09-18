@@ -83,8 +83,6 @@ if __name__ == "__main__":
     mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
 
 
-# torchrun --standalone --nproc_per_node=(number of gpus) PytorchParallelComputing.py
-
 # Expected with 2 gpus
 # [Epoch x] Rank 0 starting training loop with 4 batches
 # [Epoch x] Rank 1 starting training loop with 4 batches
