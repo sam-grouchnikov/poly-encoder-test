@@ -1,56 +1,70 @@
-## Directly copied from PyTorch websites, not a unique implementation
-
+import os
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+import torch.optim as optim
+from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 
-input_size = 5
-output_size = 2
+# Crucial setup for allowing cross-gpu communication
+def setup():
+    dist.init_process_group(backend='nccl', init_method='env://')
+    rank = int(os.environ['RANK'])
+    local_rank = int(os.environ['LOCAL_RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+    torch.cuda.set_device(local_rank)
 
-batch_size = 30
-data_size = 100
+    print(f"[SETUP] rank={rank}, local_rank={local_rank}, world_size={world_size}, device={torch.cuda.current_device()}")
+    return rank, local_rank, world_size
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+def cleanup():
+    dist.destroy_process_group()
 
-class RandomDataset(Dataset):
 
-    def __init__(self, size, length):
-        self.len = length
-        self.data = torch.randn(length, size)
+def train():
+    rank, local_rank, world_size = setup()
 
-    def __getitem__(self, index):
-        return self.data[index]
+    model = nn.Linear(10, 1).to(local_rank)
+    # Wrapping the model as a DDP
+    model = DDP(model, device_ids=[local_rank])
 
-    def __len__(self):
-        return self.len
+    dataset = TensorDataset(torch.randn(32, 10), torch.randn(32, 1))
+    # Distributed the data evenly across GPUs
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=4, sampler=sampler)
 
-rand_loader = DataLoader(dataset=RandomDataset(input_size, data_size),
-                         batch_size=batch_size, shuffle=True)
+    optimizer = optim.SGD(model.parameters(), lr=0.01)
+    loss_fn = nn.MSELoss()
 
-class Model(nn.Module):
-    # Our model
+    for epoch in range(2):
+        sampler.set_epoch(epoch)  # shuffle differently each epoch
+        print(f"\n[Epoch {epoch}] Rank {rank} starting training loop with {len(dataloader)} batches")
+        for batch_idx, (x, y) in enumerate(dataloader):
+            x, y = x.to(local_rank), y.to(local_rank)
+            optimizer.zero_grad()
+            y_pred = model(x)
+            loss = loss_fn(y_pred, y)
+            loss.backward()
+            optimizer.step()
 
-    def __init__(self, input_size, output_size):
-        super(Model, self).__init__()
-        self.fc = nn.Linear(input_size, output_size)
+            print(f"Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}")
 
-    def forward(self, input):
-        output = self.fc(input)
-        print("\tIn Model: input size", input.size(),
-              "output size", output.size())
+        if rank == 0:
+            print(f"[Epoch {epoch}] >>> Final loss (Rank 0 only): {loss.item():.4f}")
 
-        return output
+    # Shuts down process group
+    cleanup()
 
-model = Model(input_size, output_size)
-if torch.cuda.device_count() > 1:
-  print("Let's use", torch.cuda.device_count(), "GPUs!")
-  # dim = 0 [30, xxx] -> [10, ...], [10, ...], [10, ...] on 3 GPUs
-  model = nn.DataParallel(model)
+train()
 
-model.to(device)
+# torchrun --standalone --nproc_per_node=(number of gpus) PytorchParallelComputing.py
 
-for data in rand_loader:
-    input = data.to(device)
-    output = model(input)
-    print("Outside: input size", input.size(),
-          "output_size", output.size())
+# Expected with 2 gpus
+# [Epoch x] Rank 0 starting training loop with 4 batches
+# [Epoch x] Rank 1 starting training loop with 4 batches
+
+# Expected with 4 gpus
+# [Epoch x] Rank 0 starting training loop with 2 batches
+# [Epoch x] Rank 1 starting training loop with 2 batches
+# [Epoch x] Rank 2 starting training loop with 2 batches
+# [Epoch x] Rank 3 starting training loop with 2 batches
