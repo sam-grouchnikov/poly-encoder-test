@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,32 +8,22 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
 import torch.multiprocessing as mp
 
-
 def train(rank, world_size):
-    # Make sure environment variables are set BEFORE initializing the process group
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '12355'
-
-    # Set the device for THIS process
+    # Set the GPU device for THIS rank
     torch.cuda.set_device(rank)
     device = torch.device(f'cuda:{rank}')
 
-    print(f"Rank {rank}: CUDA available: {torch.cuda.is_available()}", flush=True)
-    print(f"Rank {rank}: Current device: {torch.cuda.current_device()}", flush=True)
-    print(f"Rank {rank}: Device count: {torch.cuda.device_count()}", flush=True)
-
     # Initialize DDP process group
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+    print(f"[Rank {rank}] Initialized on device {device}", flush=True)
 
-    # Model assigned to THIS rank's GPU
+    # Simple model
     model = nn.Linear(10, 1).to(device)
     model = DDP(model, device_ids=[rank])
 
-
+    # Toy dataset
     dataset = TensorDataset(torch.randn(32, 10), torch.randn(32, 1))
-    # Allows data to be evenly distributed across GPUs
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    # Batch size is per step, so this may be changed without affecting distributed computing
     dataloader = DataLoader(dataset, batch_size=2, sampler=sampler)
 
     optimizer = optim.SGD(model.parameters(), lr=0.01)
@@ -40,53 +31,48 @@ def train(rank, world_size):
 
     # Training loop
     for epoch in range(15):
-        sampler.set_epoch(epoch)  # ensure shuffling is different per epoch
-        print(f"\n[Epoch {epoch}] Rank {rank} starting training with {len(dataloader)} batches")
+        sampler.set_epoch(epoch)  # shuffle differently each epoch
+        print(f"[Epoch {epoch}] Rank {rank} starting training ({len(dataloader)} batches)", flush=True)
 
-        epoch_loss_accum = torch.tensor(0.0).to(rank)
+        epoch_loss_accum = torch.tensor(0.0, device=device)
         for batch_idx, (x, y) in enumerate(dataloader):
-            x, y = x.to(rank), y.to(rank)
+            start_time = time.time()
+
+            x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             outputs = model(x)
             loss = loss_fn(outputs, y)
             loss.backward()
             optimizer.step()
-            print(f"Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}")
 
-            loss_all = loss.clone()
+            # Reduce loss across GPUs
+            loss_all = loss.detach().clone()
             dist.all_reduce(loss_all, op=dist.ReduceOp.SUM)
-            loss_all /= world_size  # mean loss across all GPUs
-            epoch_loss_accum += loss_all  # accumulate for epoch
+            loss_all /= world_size
+            epoch_loss_accum += loss_all
 
-            print(f"Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}")
+            batch_time = time.time() - start_time
+            print(f"[Rank {rank}] Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}, Step Time={batch_time:.3f}s", flush=True)
 
-
-        epoch_loss_avg = epoch_loss_accum / len(dataloader)  # average across batches
+        epoch_loss_avg = epoch_loss_accum / len(dataloader)
         if rank == 0:
-
-            print(f"[Epoch {epoch}] >>> Rank 0 epoch loss: {epoch_loss_avg.item():.4f}")
+            print(f"[Epoch {epoch}] >>> Average Loss: {epoch_loss_avg.item():.4f}", flush=True)
 
     # Cleanup
     dist.destroy_process_group()
-    print(f"Rank {rank} finished training.")
+    print(f"[Rank {rank}] Finished training", flush=True)
 
 
 if __name__ == "__main__":
+    # Set environment variables for single-node DDP
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '12355'
+
     if torch.cuda.is_available():
-        print("GPUS: ", torch.cuda.device_count())
+        print("GPUS:", torch.cuda.device_count())
     else:
         print("Cuda is not available.")
-    world_size = torch.cuda.device_count() # number of GPUs / processes
+        exit(1)
+
+    world_size = torch.cuda.device_count()
     mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
-
-# torchrun --standalone --nproc_per_node=4 PytorchParallelComputing.py
-
-# Expected with 2 gpus
-# [Epoch x] Rank 0 starting training loop with 4 batches
-# [Epoch x] Rank 1 starting training loop with 4 batches
-
-# Expected with 4 gpus
-# [Epoch x] Rank 0 starting training loop with 2 batches
-# [Epoch x] Rank 1 starting training loop with 2 batches
-# [Epoch x] Rank 2 starting training loop with 2 batches
-# [Epoch x] Rank 3 starting training loop with 2 batches
