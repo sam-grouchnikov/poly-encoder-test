@@ -6,6 +6,8 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
+import wandb
+
 
 def main():
     # Get rank and world size from torchrun environment
@@ -20,6 +22,16 @@ def main():
 
     # Initialize DDP
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+
+    # Initialize WandB only on rank 0
+    if rank == 0:
+        wandb.init(project="ddp_debug", name="toy_ddp_run")
+        wandb.config.update({
+            "world_size": world_size,
+            "batch_size": 2,
+            "dataset_size": 32,
+            "epochs": 15
+        })
 
     # Simple model
     model = nn.Linear(10, 1).to(device)
@@ -58,12 +70,27 @@ def main():
             batch_time = time.time() - start_time
             print(f"[Rank {rank}] Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}, Step Time={batch_time:.3f}s", flush=True)
 
-        # Print epoch loss on rank 0
+            # Log per-step loss to WandB on rank 0
+            if rank == 0:
+                wandb.log({
+                    "loss_step": loss_all.item(),
+                    "step": epoch * len(dataloader) + batch_idx,
+                    "batch_time": batch_time
+                })
+
+        # Average epoch loss
         epoch_loss_avg = epoch_loss_accum / len(dataloader)
         if rank == 0:
             print(f"[Epoch {epoch}] >>> Average Loss: {epoch_loss_avg.item():.4f}", flush=True)
+            wandb.log({
+                "loss_epoch": epoch_loss_avg.item(),
+                "epoch": epoch
+            })
 
+    # Cleanup
     dist.destroy_process_group()
+    if rank == 0:
+        wandb.finish()
     print(f"[Rank {rank}] Finished training", flush=True)
 
 
