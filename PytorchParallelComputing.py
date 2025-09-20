@@ -11,9 +11,10 @@ import wandb
 
 def train(rank, world_size):
     # Setup environment for DDP
+    print("Intializing")
     os.environ['MASTER_ADDR'] = '127.0.0.1'  # local host for single-node
     os.environ['MASTER_PORT'] = '12355'      # any free port
-
+    print("Initialized")
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
     print(f"[SETUP] rank={rank}, device={torch.cuda.current_device()}, world_size={world_size}")
