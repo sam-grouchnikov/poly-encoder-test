@@ -6,7 +6,6 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
 import torch.multiprocessing as mp
-import wandb
 
 
 def train(rank, world_size):
@@ -61,21 +60,12 @@ def train(rank, world_size):
 
             print(f"Rank {rank}, Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}")
 
-            if rank == 0:
-                wandb.log({
-                    "loss_step": loss_all.item(),
-                    "step": epoch * len(dataloader) + batch_idx
-                })
+
         epoch_loss_avg = epoch_loss_accum / len(dataloader)  # average across batches
         if rank == 0:
-            wandb.log({
-                "loss_epoch": epoch_loss_avg.item(),
-                "epoch": epoch
-            })
+
             print(f"[Epoch {epoch}] >>> Rank 0 epoch loss: {epoch_loss_avg.item():.4f}")
 
-    if rank == 0:
-        wandb.finish()
     # Cleanup
     dist.destroy_process_group()
     print(f"Rank {rank} finished training.")
