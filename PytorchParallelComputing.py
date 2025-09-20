@@ -10,26 +10,23 @@ import wandb
 
 
 def train(rank, world_size):
-    # Setup environment for DDP
+    # Make sure environment variables are set BEFORE initializing the process group
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '12355'
+
+    # Set the device for THIS process
+    torch.cuda.set_device(rank)
+    device = torch.device(f'cuda:{rank}')
+
     print(f"Rank {rank}: CUDA available: {torch.cuda.is_available()}", flush=True)
     print(f"Rank {rank}: Current device: {torch.cuda.current_device()}", flush=True)
     print(f"Rank {rank}: Device count: {torch.cuda.device_count()}", flush=True)
-    torch.cuda.set_device(rank)
-    device = torch.device('cuda:{}'.format(rank))
-    print("Intializing")
-    os.environ['MASTER_ADDR'] = '127.0.0.1'  # local host for single-node
-    os.environ['MASTER_PORT'] = '12355'      # any free port
-    print("Initialized")
+
+    # Initialize DDP process group
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
 
-    print(f"[SETUP] rank={rank}, device={torch.cuda.current_device()}, world_size={world_size}")
-
-    if rank == 0:
-        wandb.init(project="ddp_debug", name="toy_ddp_run")
-        wandb.config.update({"world_size": world_size, "batch_size": 2, "dataset_size": 32})
-
-    # Model as DDP process
-    model = nn.Linear(10, 1).to(rank)
+    # Model assigned to THIS rank's GPU
+    model = nn.Linear(10, 1).to(device)
     model = DDP(model, device_ids=[rank])
 
 
