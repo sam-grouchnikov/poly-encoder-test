@@ -79,9 +79,11 @@ def train(rank, world_size):
 
 
 if __name__ == "__main__":
-    print(torch.cuda.is_available())
-    print(torch.cuda.device_count())
-    world_size = torch.cuda.device_count()  # number of GPUs / processes
+    if torch.cuda.is_available():
+        print("GPUS: ", torch.cuda.device_count())
+    else:
+        print("Cuda is not available.")
+    world_size = torch.cuda.device_count() # number of GPUs / processes
     mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
 
 # torchrun --standalone --nproc_per_node=4 PytorchParallelComputing.py
