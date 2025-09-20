@@ -6,20 +6,24 @@ import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, TensorDataset, DistributedSampler
-import torch.multiprocessing as mp
 
-def train(rank, world_size):
-    # Set the GPU device for THIS rank
-    torch.cuda.set_device(rank)
-    device = torch.device(f'cuda:{rank}')
+def main():
+    # Get rank and world size from torchrun environment
+    rank = int(os.environ['RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
+    local_rank = int(os.environ['LOCAL_RANK'])
 
-    # Initialize DDP process group
+    # Set the device for this process
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f'cuda:{local_rank}')
+    print(f"[Rank {rank}] Using device {device}", flush=True)
+
+    # Initialize DDP
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-    print(f"[Rank {rank}] Initialized on device {device}", flush=True)
 
     # Simple model
     model = nn.Linear(10, 1).to(device)
-    model = DDP(model, device_ids=[rank])
+    model = DDP(model, device_ids=[local_rank])
 
     # Toy dataset
     dataset = TensorDataset(torch.randn(32, 10), torch.randn(32, 1))
@@ -31,10 +35,10 @@ def train(rank, world_size):
 
     # Training loop
     for epoch in range(15):
-        sampler.set_epoch(epoch)  # shuffle differently each epoch
-        print(f"[Epoch {epoch}] Rank {rank} starting training ({len(dataloader)} batches)", flush=True)
-
+        sampler.set_epoch(epoch)
         epoch_loss_accum = torch.tensor(0.0, device=device)
+
+        print(f"[Epoch {epoch}] Rank {rank} starting ({len(dataloader)} batches)", flush=True)
         for batch_idx, (x, y) in enumerate(dataloader):
             start_time = time.time()
 
@@ -54,25 +58,14 @@ def train(rank, world_size):
             batch_time = time.time() - start_time
             print(f"[Rank {rank}] Epoch {epoch}, Batch {batch_idx}, Loss={loss.item():.4f}, Step Time={batch_time:.3f}s", flush=True)
 
+        # Print epoch loss on rank 0
         epoch_loss_avg = epoch_loss_accum / len(dataloader)
         if rank == 0:
             print(f"[Epoch {epoch}] >>> Average Loss: {epoch_loss_avg.item():.4f}", flush=True)
 
-    # Cleanup
     dist.destroy_process_group()
     print(f"[Rank {rank}] Finished training", flush=True)
 
 
 if __name__ == "__main__":
-    # Set environment variables for single-node DDP
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '12355'
-
-    if torch.cuda.is_available():
-        print("GPUS:", torch.cuda.device_count())
-    else:
-        print("Cuda is not available.")
-        exit(1)
-
-    world_size = torch.cuda.device_count()
-    mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
+    main()
