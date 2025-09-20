@@ -15,7 +15,7 @@ def train(rank, world_size):
     print(f"Rank {rank}: Current device: {torch.cuda.current_device()}", flush=True)
     print(f"Rank {rank}: Device count: {torch.cuda.device_count()}", flush=True)
     torch.cuda.set_device(rank)
-    device = torch.device('cuda:{rank}')
+    device = torch.device('cuda:{}'.format(rank))
     print("Intializing")
     os.environ['MASTER_ADDR'] = '127.0.0.1'  # local host for single-node
     os.environ['MASTER_PORT'] = '12355'      # any free port
