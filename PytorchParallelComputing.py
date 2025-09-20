@@ -11,6 +11,10 @@ import wandb
 
 def train(rank, world_size):
     # Setup environment for DDP
+    print(f"Rank {rank}: CUDA available: {torch.cuda.is_available()}", flush=True)
+    print(f"Rank {rank}: Current device: {torch.cuda.current_device()}", flush=True)
+    print(f"Rank {rank}: Device count: {torch.cuda.device_count()}", flush=True)
+
     print("Intializing")
     os.environ['MASTER_ADDR'] = '127.0.0.1'  # local host for single-node
     os.environ['MASTER_PORT'] = '12355'      # any free port
