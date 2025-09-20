@@ -14,13 +14,14 @@ def train(rank, world_size):
     print(f"Rank {rank}: CUDA available: {torch.cuda.is_available()}", flush=True)
     print(f"Rank {rank}: Current device: {torch.cuda.current_device()}", flush=True)
     print(f"Rank {rank}: Device count: {torch.cuda.device_count()}", flush=True)
-
+    torch.cuda.set_device(rank)
+    device = torch.device('cuda:{rank}')
     print("Intializing")
     os.environ['MASTER_ADDR'] = '127.0.0.1'  # local host for single-node
     os.environ['MASTER_PORT'] = '12355'      # any free port
     print("Initialized")
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
+
     print(f"[SETUP] rank={rank}, device={torch.cuda.current_device()}, world_size={world_size}")
 
     if rank == 0:
